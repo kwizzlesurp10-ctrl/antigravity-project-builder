@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { ORBITAL_MODULES } from '@/lib/modules-catalog';
+import { synthesizeProject, createProjectZipArchive } from '@/lib/synthesizer';
+import { recordTelemetry } from '@/lib/db/sqlite-engine';
 
 const VALID_IDS = ORBITAL_MODULES.map((m) => m.id) as [string, ...string[]];
 
@@ -9,12 +11,25 @@ const SynthesizeSchema = z.object({
     .string()
     .min(2)
     .max(64)
-    .regex(/^[a-z0-9-]+$/, 'Project name must be kebab-case alphanumeric'),
+    .regex(/^[a-z0-9-]+$/, 'Project name must be kebab-case alphanumeric')
+    .default('antigravity-orbital-app'),
+  description: z.string().max(280).optional(),
+  prompt: z.string().max(500).optional(),
   moduleIds: z.array(z.enum(VALID_IDS)).min(1),
+  gravityConfig: z
+    .object({
+      rpm: z.number().min(0).max(5).default(1.0),
+      kesslerMode: z.boolean().default(false),
+    })
+    .optional(),
+  format: z.enum(['json', 'zip']).optional(),
 });
 
 export async function POST(request: Request) {
+  const start = performance.now();
   try {
+    const url = new URL(request.url);
+    const queryFormat = url.searchParams.get('format');
     const body = await request.json();
     const parsed = SynthesizeSchema.safeParse(body);
 
@@ -22,16 +37,107 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
     }
 
-    const selectedModules = ORBITAL_MODULES.filter((m) => parsed.data.moduleIds.includes(m.id));
-    const manifest = {
-      project: parsed.data.projectName,
-      generatedAt: new Date().toISOString(),
-      modules: selectedModules.map((m) => m.id),
-      filesCount: selectedModules.reduce((acc, m) => acc + Object.keys(m.files).length, 0),
-    };
+    const result = synthesizeProject({
+      projectName: parsed.data.projectName,
+      description: parsed.data.description,
+      prompt: parsed.data.prompt,
+      moduleIds: parsed.data.moduleIds,
+      gravityConfig: parsed.data.gravityConfig,
+    });
 
-    return NextResponse.json({ status: 'synthesized', manifest }, { status: 200 });
+    const durationMs = performance.now() - start;
+
+    recordTelemetry({
+      eventType: (parsed.data.format === 'zip' || queryFormat === 'zip') ? 'ZIP_EXPORT' : 'AST_SYNTHESIS',
+      projectName: result.projectName,
+      moduleCount: result.resolvedIds.length,
+      filesCount: result.filesCount,
+      bundleBytes: result.bundleBytes,
+      durationMs,
+    });
+
+    if (parsed.data.format === 'zip' || queryFormat === 'zip') {
+      const zipBytes = createProjectZipArchive(result.files, result.projectName);
+      return new NextResponse(Buffer.from(zipBytes), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="${result.projectName}.zip"`,
+          'X-Bundle-SHA256': result.sha256,
+          'X-Files-Count': String(result.filesCount),
+        },
+      });
+    }
+
+    return NextResponse.json(
+      {
+        status: 'synthesized',
+        durationMs: Number(durationMs.toFixed(2)),
+        manifest: {
+          ...result.manifest,
+          description: result.description,
+          files: result.files,
+          fileMeta: result.fileManifest,
+        },
+        files: result.files,
+      },
+      { status: 200 }
+    );
   } catch {
     return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
   }
+}
+
+export async function GET(request: Request) {
+  const start = performance.now();
+  const url = new URL(request.url);
+  const projectName = url.searchParams.get('projectName') || 'antigravity-orbital-app';
+  const rawModules = url.searchParams.get('modules');
+  const format = url.searchParams.get('format') || 'json';
+
+  const requestedIds = rawModules
+    ? rawModules.split(',').filter((id) => VALID_IDS.includes(id))
+    : ['nextjs-app', 'anime-physics', 'supabase-db'];
+
+  const result = synthesizeProject({
+    projectName,
+    moduleIds: requestedIds.length > 0 ? requestedIds : ['nextjs-app'],
+  });
+
+  const durationMs = performance.now() - start;
+
+  if (format === 'zip') {
+    recordTelemetry({
+      eventType: 'ZIP_EXPORT',
+      projectName: result.projectName,
+      moduleCount: result.resolvedIds.length,
+      filesCount: result.filesCount,
+      bundleBytes: result.bundleBytes,
+      durationMs,
+    });
+    const zipBytes = createProjectZipArchive(result.files, result.projectName);
+    return new NextResponse(Buffer.from(zipBytes), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${result.projectName}.zip"`,
+        'X-Bundle-SHA256': result.sha256,
+      },
+    });
+  }
+
+  return NextResponse.json(
+    {
+      status: 'synthesized',
+      durationMs: Number(durationMs.toFixed(2)),
+      manifest: {
+        ...result.manifest,
+        description: result.description,
+        files: result.files,
+        fileMeta: result.fileManifest,
+      },
+      files: result.files,
+    },
+    { status: 200 }
+  );
 }
