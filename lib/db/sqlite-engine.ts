@@ -412,6 +412,13 @@ function computeBundleStats(moduleIds: string[]): {
   };
 }
 
+export function getDataDir(): string {
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return path.join('/tmp', '.data');
+  }
+  return path.join(process.cwd(), '.data');
+}
+
 let dbInstance: DatabaseSync | null = null;
 let lastSeededModuleCount = 0;
 
@@ -423,7 +430,7 @@ function getDatabase(): DatabaseSync {
     return dbInstance;
   }
 
-  const dataDir = path.join(process.cwd(), '.data');
+  const dataDir = getDataDir();
   fs.mkdirSync(dataDir, { recursive: true });
   const dbPath = path.join(dataDir, 'antigravity.sqlite');
 

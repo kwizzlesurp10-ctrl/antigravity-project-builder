@@ -3,7 +3,7 @@ import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { synthesizeProject } from '@/lib/synthesizer';
-import { listCustomModules, recordTelemetry } from '@/lib/db/sqlite-engine';
+import { listCustomModules, recordTelemetry, getDataDir } from '@/lib/db/sqlite-engine';
 import { validateRuntimeEnv } from '@/lib/security/env-validator';
 import {
   checkSlidingWindowRateLimit,
@@ -224,7 +224,7 @@ export async function POST(request: Request) {
     const writtenFiles: string[] = [];
 
     if (parsed.data.mode === 'materialize') {
-      const baseTarget = path.join(process.cwd(), '.data', 'ignited-projects', synthesized.projectName);
+      const baseTarget = path.join(getDataDir(), 'ignited-projects', synthesized.projectName);
       fs.mkdirSync(baseTarget, { recursive: true });
 
       for (const [relPath, content] of Object.entries(allIgnitionFiles)) {
@@ -294,7 +294,7 @@ function collectFilesRecursive(dirPath: string, baseDir = dirPath): { files: str
 }
 
 export async function GET() {
-  const rootDir = path.join(process.cwd(), '.data', 'ignited-projects');
+  const rootDir = path.join(getDataDir(), 'ignited-projects');
   if (!fs.existsSync(rootDir)) {
     return NextResponse.json({ status: 'online', materializedProjects: [] }, { status: 200 });
   }
@@ -324,7 +324,7 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: 'Invalid projectName parameter' }, { status: 400 });
   }
 
-  const targetDir = path.join(process.cwd(), '.data', 'ignited-projects', projectName);
+  const targetDir = path.join(getDataDir(), 'ignited-projects', projectName);
   if (!fs.existsSync(targetDir)) {
     return NextResponse.json({ deleted: false, projectName }, { status: 404 });
   }
