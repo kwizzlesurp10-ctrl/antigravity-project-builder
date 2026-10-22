@@ -25,6 +25,7 @@ export interface SynthesizeProjectOptions {
   prompt?: string;
   moduleIds: string[];
   gravityConfig?: GravityConfig;
+  customModules?: OrbitalModule[];
 }
 
 export interface SynthesizedFileMeta {
@@ -308,9 +309,16 @@ function getModuleEnvVars(mod: OrbitalModule): NormalizedEnvVar[] {
  * Resolves all transitive module dependencies from ORBITAL_MODULES and returns
  * a deterministic topological ordering where base dependencies precede dependents.
  */
-export function resolveDependencyGraph(requestedIds: string[]): DependencyGraphResult {
-  const catalogMap = new Map<string, OrbitalModule>(ORBITAL_MODULES.map((m) => [m.id, m]));
-  const catalogIndex = new Map<string, number>(ORBITAL_MODULES.map((m, idx) => [m.id, idx]));
+export function resolveDependencyGraph(
+  requestedIds: string[],
+  customModules: OrbitalModule[] = []
+): DependencyGraphResult {
+  const combinedModules = [
+    ...ORBITAL_MODULES,
+    ...customModules.filter((c) => !ORBITAL_MODULES.some((m) => m.id === c.id)),
+  ];
+  const catalogMap = new Map<string, OrbitalModule>(combinedModules.map((m) => [m.id, m]));
+  const catalogIndex = new Map<string, number>(combinedModules.map((m, idx) => [m.id, idx]));
 
   const initialRequested = Array.from(
     new Set(requestedIds.filter((id) => catalogMap.has(id)))
@@ -803,8 +811,14 @@ export function synthesizeProject(options: SynthesizeProjectOptions): Synthesize
   const requestedIds =
     options.moduleIds && options.moduleIds.length > 0 ? options.moduleIds : ['nextjs-app'];
 
-  const graph = resolveDependencyGraph(requestedIds);
-  const catalogMap = new Map<string, OrbitalModule>(ORBITAL_MODULES.map((m) => [m.id, m]));
+  const customModules = options.customModules ?? [];
+  const combinedModules = [
+    ...ORBITAL_MODULES,
+    ...customModules.filter((c) => !ORBITAL_MODULES.some((m) => m.id === c.id)),
+  ];
+
+  const graph = resolveDependencyGraph(requestedIds, customModules);
+  const catalogMap = new Map<string, OrbitalModule>(combinedModules.map((m) => [m.id, m]));
 
   const modules: OrbitalModule[] = graph.topologicalOrder
     .map((id) => catalogMap.get(id))

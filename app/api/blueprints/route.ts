@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { ORBITAL_MODULES } from '@/lib/modules-catalog';
-import { listBlueprints, saveBlueprint, deleteBlueprint, recordTelemetry } from '@/lib/db/sqlite-engine';
+import {
+  listBlueprints,
+  saveBlueprint,
+  deleteBlueprint,
+  recordTelemetry,
+  listCustomModules,
+} from '@/lib/db/sqlite-engine';
 import { synthesizeProject } from '@/lib/synthesizer';
 
 const VALID_IDS = ORBITAL_MODULES.map((m) => m.id) as [string, ...string[]];
@@ -15,7 +21,7 @@ const CreateBlueprintSchema = z.object({
     .regex(/^[a-z0-9-]+$/)
     .default('antigravity-orbital-app'),
   prompt: z.string().max(500).optional().default('Custom orbital architecture'),
-  moduleIds: z.array(z.enum(VALID_IDS)).min(1),
+  moduleIds: z.array(z.string().min(2).max(64)).min(1),
   gravityRpm: z.number().min(0).max(5).optional().default(1.0),
   kesslerMode: z.boolean().optional().default(false),
 });
@@ -35,14 +41,22 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
     }
 
+    const customModules = listCustomModules();
+    const validSet = new Set([...VALID_IDS, ...customModules.map((m) => m.id)]);
+    const filteredIds = parsed.data.moduleIds.filter((id) => validSet.has(id));
+    if (filteredIds.length === 0) {
+      return NextResponse.json({ error: 'No valid orbital module IDs provided' }, { status: 400 });
+    }
+
     const synthesized = synthesizeProject({
       projectName: parsed.data.projectSlug,
       prompt: parsed.data.prompt,
-      moduleIds: parsed.data.moduleIds,
+      moduleIds: filteredIds,
       gravityConfig: {
         rpm: parsed.data.gravityRpm,
         kesslerMode: parsed.data.kesslerMode,
       },
+      customModules,
     });
 
     const record = saveBlueprint({

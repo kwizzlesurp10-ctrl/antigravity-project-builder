@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import OrbitalNavBar from '@/components/OrbitalNavBar';
 
 export const metadata: Metadata = {
   title: 'Antigravity Project Builder | Orbital Full-Stack Synthesizer',
@@ -9,7 +10,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="dark">
-      <body className="antialiased bg-[#05070f] text-slate-100">{children}</body>
+      <body className="antialiased bg-[#05070f] text-slate-100">
+        <OrbitalNavBar />
+        {children}
+      </body>
     </html>
   );
 }

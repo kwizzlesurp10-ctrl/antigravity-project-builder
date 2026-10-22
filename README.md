@@ -1,15 +1,43 @@
-# Antigravity Project Builder
+# Antigravity Project Builder v3.5 — Maximum Destiny Edition
 
-Visually assemble a full-stack project through weightless, 60fps orbital component animation powered by **Next.js 15**, **Anime.js**, **Supabase**, and **pgvector**.
+Visually assemble, audit, diff, and ignite full-stack architectures through weightless 60fps orbital choreography powered by **Next.js 15 App Router**, **Anime.js**, **Node SQLite Vector Engine**, **Supabase SSR + PostgreSQL 17 RLS**, and **pgvector HNSW**.
 
-## Features
-- **60fps Orbital Physics Engine**: Spring-physics radial docking + perpetual sinusoidal zero-G float via Anime.js and GPU-accelerated transforms.
-- **Automatic Dependency Gravity Capture**: Docking a module (e.g., `pgvector-rag`) automatically pulls its required dependencies (`supabase-db`) into the Inner Singularity Orbit.
-- **Live AST Blueprint HUD**: Real-time synthesized code preview across Frontend, Backend, Database, AI, and DevOps layers.
-- **Kessler Syndrome Easter Egg**: Click the central Singularity Core 5 times to invert orbital gravity into hyper-speed overdrive.
+## Spatial UI Routes
+
+| Route | Surface | Capabilities |
+| :--- | :--- | :--- |
+| `/` | **Orbital Studio HUD** | 60fps Anime.js orbital canvas, automatic transitive dependency capture, Kessler Syndrome overdrive, multi-file AST code explorer, and `.zip` export. |
+| `/laboratory` | **AI & pgvector RAG Lab** | Live SSE streaming console (`/api/ai/stream`), real-time `X-RateLimit-Remaining` HUD gauge, semantic RAG playbook browser/uploader, and 1-click constellation docking. |
+| `/shield` | **Zero-Trust Shield & Diff** | 5-Pillar Zero-Trust Readiness Scorecard (`0–100`), 1-click Auto-Dock remediation, side-by-side Blueprint AST & unified line differ, and Deployment Ignition console. |
+| `/forge` | **Custom Module Forge IDE** | AI Module Skeleton Generator, interactive multi-file AST editor, SQLite catalog persistence (`custom_orbital_modules`), and instant orbital docking. |
+
+## Backend API Routes
+
+| Endpoint | Methods | Description |
+| :--- | :--- | :--- |
+| `/api/synthesize` | `GET`, `POST` | Resolves transitive module dependencies, merges `package.json` / `.env.example` / `README.md`, computes SHA-256 digests, and exports JSON or binary `.zip` archives. |
+| `/api/recommend` | `POST` | 64-dim L2-normalized semantic vector similarity search across canonical and custom orbital modules. |
+| `/api/ai/stream` | `POST` | Zero-Trust SSE streaming endpoint wired to `validateRuntimeEnv`, `checkSlidingWindowRateLimit`, and `retrieveSemanticContext`. |
+| `/api/rag/documents` | `GET`, `POST`, `DELETE` | Dual-engine RAG knowledge base pre-seeded with 4 architectural playbooks and semantic `?q=` vector search. |
+| `/api/modules/forge` | `GET`, `POST`, `DELETE` | AI Module Skeleton Generator (`action: "generate-skeleton"`) and SQLite custom module persistence (`action: "save"`). |
+| `/api/audit/constellation` | `POST` | 5-Pillar Zero-Trust Readiness Auditor (`0–100` score across PostgreSQL RLS, Zod schemas, rate limiting, DAG topology, and DevOps QA). |
+| `/api/blueprints` | `GET`, `POST`, `DELETE` | Persistent SQLite constellation blueprint catalog. |
+| `/api/blueprints/diff` | `POST` | Structural AST & unified line-by-line file comparator across constellations. |
+| `/api/deploy/ignition` | `POST` | Generates `docker-compose.yml` (`pgvector/pgvector:pg17` + Next.js 15 standalone) and `ignite.sh`, or materializes projects to `.data/ignited-projects/<slug>`. |
+| `/api/webhooks/stripe` | `POST` | Timing-safe HMAC-SHA256 `stripe-signature` webhook verifier with SQLite telemetry logging. |
+| `/api/telemetry` | `GET` | SQLite WAL synthesis metrics, average latency, vector index counts, and recent audit events. |
+| `/api/health` | `GET` | Zero-latency container readiness and liveness probe. |
 
 ## Quick Start
+
 ```bash
+# Install dependencies
 npm install
+
+# Start development server on http://localhost:3000
 npm run dev
+
+# Build production bundle & run 7-suite Playwright E2E verification
+npm run build
+npm run test:e2e
 ```

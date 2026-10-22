@@ -76,10 +76,16 @@ export default function AntigravityBuilder() {
   const [blueprintTitle, setBlueprintTitle] = useState('');
   const [savingBlueprint, setSavingBlueprint] = useState(false);
   const [statusAnnouncement, setStatusAnnouncement] = useState('Antigravity Orbital Core Online');
+  const [customModules, setCustomModules] = useState<OrbitalModule[]>([]);
+
+  const allModules = useMemo(() => {
+    const canonicalIds = new Set(ORBITAL_MODULES.map((m) => m.id));
+    return [...ORBITAL_MODULES, ...customModules.filter((c) => !canonicalIds.has(c.id))];
+  }, [customModules]);
 
   const selectedModule = useMemo(
-    () => ORBITAL_MODULES.find((m) => m.id === selectedModuleId) ?? ORBITAL_MODULES[0],
-    [selectedModuleId]
+    () => allModules.find((m) => m.id === selectedModuleId) ?? allModules[0],
+    [allModules, selectedModuleId]
   );
 
   // Imperative DOM refs for 60fps GPU-composited orbital animation
@@ -131,9 +137,10 @@ export default function AntigravityBuilder() {
   // Fetch initial synthesis manifest, SQLite blueprints, and telemetry
   const refreshBackendTelemetry = useCallback(async () => {
     try {
-      const [bpRes, telRes] = await Promise.all([
+      const [bpRes, telRes, forgeRes] = await Promise.all([
         fetch('/api/blueprints'),
         fetch('/api/telemetry'),
+        fetch('/api/modules/forge'),
       ]);
       if (bpRes.ok) {
         const bpData = await bpRes.json();
@@ -142,6 +149,10 @@ export default function AntigravityBuilder() {
       if (telRes.ok) {
         const telData = await telRes.json();
         setTelemetry(telData);
+      }
+      if (forgeRes.ok) {
+        const forgeData = await forgeRes.json();
+        setCustomModules(forgeData.customModules ?? []);
       }
     } catch {
       // Non-blocking background sync
@@ -181,6 +192,25 @@ export default function AntigravityBuilder() {
     refreshBackendTelemetry();
   }, [refreshBackendTelemetry]);
 
+  // Ensure physicsState has entries for any newly forged custom modules
+  useEffect(() => {
+    allModules.forEach((m) => {
+      if (!physicsState.current[m.id]) {
+        const isDocked = dockedIds.includes(m.id);
+        const initRadius = isDocked ? INNER_ORBIT_RADIUS : OUTER_ORBIT_RADIUS;
+        const rad = ((m.baseAngle ?? 45) * Math.PI) / 180;
+        physicsState.current[m.id] = {
+          radius: initRadius,
+          angleOffset: rad,
+          floatY: 0,
+          scale: isDocked ? 1.06 : 0.92,
+          x: Math.cos(rad) * initRadius,
+          y: Math.sin(rad) * initRadius,
+        };
+      }
+    });
+  }, [allModules, dockedIds]);
+
   // 1. Initialize Anime.js perpetual weightless sinusoidal float per module
   useEffect(() => {
     const isReduced =
@@ -188,7 +218,7 @@ export default function AntigravityBuilder() {
       (typeof window !== 'undefined' &&
         (window.matchMedia('(prefers-reduced-motion: reduce)').matches || navigator.webdriver));
     if (isReduced) return;
-    const floatAnimations = ORBITAL_MODULES.map((m, idx) =>
+    const floatAnimations = allModules.map((m, idx) =>
       anime({
         targets: physicsState.current[m.id],
         floatY: [-6.5, 6.5],
@@ -199,7 +229,7 @@ export default function AntigravityBuilder() {
       })
     );
     return () => floatAnimations.forEach((anim) => anim.pause());
-  }, [reducedMotion]);
+  }, [allModules, reducedMotion]);
 
   // 2. Animate radial spring docking whenever dockedIds change
   useEffect(() => {
@@ -207,7 +237,7 @@ export default function AntigravityBuilder() {
       reducedMotion ||
       (typeof window !== 'undefined' &&
         (window.matchMedia('(prefers-reduced-motion: reduce)').matches || navigator.webdriver));
-    ORBITAL_MODULES.forEach((m) => {
+    allModules.forEach((m) => {
       const isDocked = dockedIds.includes(m.id);
       const state = physicsState.current[m.id];
       if (!state) return;
@@ -223,12 +253,12 @@ export default function AntigravityBuilder() {
         easing: 'spring(1, 84, 13, 0)',
       });
     });
-  }, [dockedIds, reducedMotion]);
+  }, [allModules, dockedIds, reducedMotion]);
 
   // Compute active inter-module dependency edges for SVG rendering
   const dependencyEdges = useMemo(() => {
     const edges: Array<{ key: string; from: string; to: string; color: string; active: boolean }> = [];
-    for (const mod of ORBITAL_MODULES) {
+    for (const mod of allModules) {
       for (const depId of mod.dependencies) {
         const active = dockedIds.includes(mod.id) && dockedIds.includes(depId);
         edges.push({
@@ -241,7 +271,7 @@ export default function AntigravityBuilder() {
       }
     }
     return edges;
-  }, [dockedIds]);
+  }, [allModules, dockedIds]);
 
   // 3. 60fps requestAnimationFrame orbital physics loop (Zero React re-renders)
   useEffect(() => {
@@ -262,7 +292,7 @@ export default function AntigravityBuilder() {
         : 0.28 * effectiveRpm;
       globalAngle += dt * speedMultiplier;
 
-      ORBITAL_MODULES.forEach((m) => {
+      allModules.forEach((m) => {
         const state = physicsState.current[m.id];
         if (!state) return;
         const isDocked = dockedIds.includes(m.id);
@@ -313,7 +343,7 @@ export default function AntigravityBuilder() {
 
     frameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frameId);
-  }, [dockedIds, kesslerMode, gravityRpm, reducedMotion, dependencyEdges]);
+  }, [allModules, dockedIds, kesslerMode, gravityRpm, reducedMotion, dependencyEdges]);
 
   // Toggle module docking + automatic transitive dependency gravity capture
   const toggleModule = (mod: OrbitalModule) => {
@@ -334,7 +364,7 @@ export default function AntigravityBuilder() {
         const dep = queue.shift()!;
         if (!nextSet.has(dep)) {
           nextSet.add(dep);
-          const depMod = ORBITAL_MODULES.find((item) => item.id === dep);
+          const depMod = allModules.find((item) => item.id === dep);
           if (depMod) queue.push(...depMod.dependencies);
         }
       }
@@ -491,27 +521,30 @@ export default function AntigravityBuilder() {
 
   // Unified code preview across all docked modules (also guarantees E2E test compatibility)
   const unifiedCodePreview = useMemo(() => {
-    return ORBITAL_MODULES.filter((m) => dockedIds.includes(m.id))
+    return allModules
+      .filter((m) => dockedIds.includes(m.id))
       .map((m) =>
         Object.entries(m.files)
           .map(([filePath, content]) => `// === [${m.name}] ${filePath} ===\n${content}`)
           .join('\n\n')
       )
       .join('\n\n');
-  }, [dockedIds]);
+  }, [allModules, dockedIds]);
 
   const synthesizedFilesMap = useMemo(() => {
     if (manifest?.files && Object.keys(manifest.files).length > 0) {
       return manifest.files;
     }
     const fallback: Record<string, string> = {};
-    ORBITAL_MODULES.filter((m) => dockedIds.includes(m.id)).forEach((m) => {
-      Object.entries(m.files).forEach(([p, c]) => {
-        fallback[p] = c;
+    allModules
+      .filter((m) => dockedIds.includes(m.id))
+      .forEach((m) => {
+        Object.entries(m.files).forEach(([p, c]) => {
+          fallback[p] = c;
+        });
       });
-    });
     return fallback;
-  }, [manifest, dockedIds]);
+  }, [allModules, manifest, dockedIds]);
 
   const fileKeys = useMemo(() => Object.keys(synthesizedFilesMap).sort(), [synthesizedFilesMap]);
 
@@ -530,8 +563,8 @@ export default function AntigravityBuilder() {
 
   const totalMass = useMemo(
     () =>
-      ORBITAL_MODULES.filter((m) => dockedIds.includes(m.id)).reduce((sum, m) => sum + m.mass, 0),
-    [dockedIds]
+      allModules.filter((m) => dockedIds.includes(m.id)).reduce((sum, m) => sum + m.mass, 0),
+    [allModules, dockedIds]
   );
 
   return (
@@ -753,7 +786,7 @@ export default function AntigravityBuilder() {
             ))}
 
             {/* Dynamic Core-to-Node Bezier Tethers */}
-            {ORBITAL_MODULES.map((m) => {
+            {allModules.map((m) => {
               const isDocked = dockedIds.includes(m.id);
               return (
                 <path
@@ -801,8 +834,8 @@ export default function AntigravityBuilder() {
             </span>
           </div>
 
-          {/* 12 Orbiting Module Nodes */}
-          {ORBITAL_MODULES.map((m) => {
+          {/* Orbiting Module Nodes (Canonical + Custom Forged) */}
+          {allModules.map((m) => {
             const isDocked = dockedIds.includes(m.id);
             const isSelected = selectedModule.id === m.id;
             const rec = recommendations[m.id];
@@ -927,6 +960,52 @@ export default function AntigravityBuilder() {
             >
               {dockedIds.includes(selectedModule.id) ? 'IN INNER ORBIT' : 'OUTER BELT'}
             </span>
+          </div>
+
+          {/* Selected Module Specification Inspector Bar */}
+          <div className="mt-2.5 p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-1.5 text-[10px] font-mono">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <span className="text-slate-400">
+                Mass: <strong className="text-cyan-300">{selectedModule.mass}u</strong> ·{' '}
+                {ORBITAL_MODULES.some((m) => m.id === selectedModule.id) ? 'CANONICAL' : 'CUSTOM FORGED'}
+              </span>
+              {selectedModule.dependencies.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-slate-500">Deps:</span>
+                  {selectedModule.dependencies.map((depId) => (
+                    <button
+                      key={depId}
+                      type="button"
+                      onClick={() => setSelectedModuleId(depId)}
+                      className="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-700 text-cyan-300 hover:border-cyan-400 cursor-pointer"
+                    >
+                      {depId}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {(selectedModule.envVars.length > 0 ||
+              Object.keys(selectedModule.npmDependencies).length > 0) && (
+              <div className="flex flex-wrap gap-1 pt-1 border-t border-slate-800/60">
+                {Object.keys(selectedModule.npmDependencies).map((pkg) => (
+                  <span
+                    key={pkg}
+                    className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30"
+                  >
+                    npm:{pkg}
+                  </span>
+                ))}
+                {selectedModule.envVars.slice(0, 3).map((ev) => (
+                  <span
+                    key={ev.key}
+                    className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30"
+                  >
+                    env:{ev.key}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* HUD Workspace Navigation Tabs */}

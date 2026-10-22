@@ -428,6 +428,7 @@ function getDatabase(): DatabaseSync {
   const dbPath = path.join(dataDir, 'antigravity.sqlite');
 
   const db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA synchronous = NORMAL;');
 
@@ -465,10 +466,50 @@ function getDatabase(): DatabaseSync {
       duration_ms REAL NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS rag_documents (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'architecture',
+      project_id TEXT NOT NULL DEFAULT 'global',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      embedding_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS custom_orbital_modules (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      subtitle TEXT NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT NOT NULL,
+      color TEXT NOT NULL,
+      mass INTEGER NOT NULL DEFAULT 15,
+      base_angle INTEGER NOT NULL DEFAULT 45,
+      dependencies_json TEXT NOT NULL DEFAULT '["nextjs-app"]',
+      npm_dependencies_json TEXT NOT NULL DEFAULT '{}',
+      env_vars_json TEXT NOT NULL DEFAULT '[]',
+      keywords_json TEXT NOT NULL DEFAULT '[]',
+      files_json TEXT NOT NULL DEFAULT '{}',
+      embedding_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+      event_id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      customer_email TEXT NOT NULL DEFAULT '',
+      subscription_status TEXT NOT NULL DEFAULT 'active',
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      verified INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
   `);
 
   seedModuleVectors(db);
   seedStarterBlueprints(db);
+  seedStarterRagDocuments(db);
 
   dbInstance = db;
   return db;
@@ -663,6 +704,72 @@ function seedStarterBlueprints(db: DatabaseSync): void {
   });
 }
 
+function seedStarterRagDocuments(db: DatabaseSync): void {
+  const countRow = db
+    .prepare('SELECT COUNT(*) as count FROM rag_documents')
+    .get() as { count: number } | undefined;
+
+  if (countRow && countRow.count > 0) {
+    return;
+  }
+
+  const playbooks = [
+    {
+      id: 'rag-doc-zero-trust-rls',
+      title: 'Zero-Trust PostgreSQL 17 Row-Level Security & JWT Claims Playbook',
+      category: 'security',
+      content:
+        'Enforce Row-Level Security (RLS) on every public table using `alter table public.<name> enable row level security;`. Always wrap `auth.uid()` in a scalar subquery `(select auth.uid()) = user_id` so PostgreSQL 17 caches the JWT claim per statement rather than re-evaluating per row. Pair database policies with Zod runtime environment validation (`validateRuntimeEnv`) and sliding-window IP rate limiting (`checkSlidingWindowRateLimit`).',
+      metadata: { moduleIds: ['supabase-db', 'supabase-auth', 'zod-security'], version: '17.0' },
+    },
+    {
+      id: 'rag-doc-nextjs15-ppr',
+      title: 'Next.js 15 App Router, Partial Prerendering (PPR), & Server Actions Architecture',
+      category: 'frontend',
+      content:
+        'Next.js 15 App Router uses React 19 Server Components by default, async `cookies()` / `headers()` APIs, and `output: standalone` for minimal Docker container footprints. Configure strict security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`) in `next.config.ts` and cap Server Actions `bodySizeLimit` to `2mb`.',
+      metadata: { moduleIds: ['nextjs-app', 'tailwind-design', 'docker-spaces'], version: '15.2' },
+    },
+    {
+      id: 'rag-doc-pgvector-hnsw',
+      title: 'pgvector halfvec(1536) HNSW Index Tuning & Hybrid Lexical-Cosine Retrieval',
+      category: 'ai',
+      content:
+        'Use 16-bit `halfvec(1536)` columns with `halfvec_cosine_ops` HNSW indexes (`m = 16, ef_construction = 64`) to cut PostgreSQL vector memory usage by 50% while preserving >99% recall. Expose similarity search via a `language sql stable` RPC (`match_documents`) with explicit `set search_path = public, extensions` and combine dense cosine similarity with lexical token boosting.',
+      metadata: { moduleIds: ['pgvector-rag', 'edge-ai-gateway', 'supabase-db'], version: '0.8.0' },
+    },
+    {
+      id: 'rag-doc-stripe-idempotency',
+      title: 'Cryptographic Stripe Webhook Verification & Idempotent Subscription State Machines',
+      category: 'backend',
+      content:
+        'Read the raw HTTP request body via `await request.text()` and verify the `stripe-signature` header using `stripe.webhooks.constructEvent(rawBody, signature, webhookSecret)`. Process `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted` idempotently by upserting subscription state keyed by Stripe event ID and customer ID.',
+      metadata: { moduleIds: ['stripe-billing', 'zod-security', 'supabase-db'], version: '2024-11-20' },
+    },
+  ];
+
+  const insertDoc = db.prepare(`
+    INSERT INTO rag_documents (
+      id, title, content, category, project_id, metadata_json, embedding_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const now = new Date().toISOString();
+  for (const doc of playbooks) {
+    const embedding = computeSemanticEmbedding(`${doc.title} ${doc.category} ${doc.content}`);
+    insertDoc.run(
+      doc.id,
+      doc.title,
+      doc.content,
+      doc.category,
+      'global',
+      JSON.stringify(doc.metadata),
+      JSON.stringify(embedding),
+      now
+    );
+  }
+}
+
 export function searchModulesByVector(
   prompt: string,
   threshold = 0.14
@@ -694,7 +801,31 @@ export function searchModulesByVector(
     embedding_json: string;
   }>;
 
+  const customRows = db
+    .prepare(
+      'SELECT id, name, subtitle, description, category, keywords_json, embedding_json FROM custom_orbital_modules'
+    )
+    .all() as Array<{
+    id: string;
+    name: string;
+    subtitle: string;
+    description: string;
+    category: string;
+    keywords_json: string;
+    embedding_json: string;
+  }>;
+
   const activeCatalogIds = new Set(ORBITAL_MODULES.map((m) => m.id));
+  const combinedRows = [
+    ...rows.filter((r) => activeCatalogIds.size === 0 || activeCatalogIds.has(r.id)),
+    ...customRows.map((c) => ({
+      id: c.id,
+      name: c.name,
+      category: c.category,
+      corpus: `${c.id} ${c.name} ${c.subtitle} ${c.description} ${c.category} ${c.keywords_json}`,
+      embedding_json: c.embedding_json,
+    })),
+  ];
 
   const results: Array<{
     id: string;
@@ -704,12 +835,7 @@ export function searchModulesByVector(
     matchedTerms: string[];
   }> = [];
 
-  for (const row of rows) {
-    // Only return modules that exist in ORBITAL_MODULES if catalog is non-empty
-    if (activeCatalogIds.size > 0 && !activeCatalogIds.has(row.id)) {
-      continue;
-    }
-
+  for (const row of combinedRows) {
     const docVec = JSON.parse(row.embedding_json) as number[];
     const docTokens = new Set(tokenizeText(row.corpus));
 
@@ -877,11 +1003,26 @@ export function recordTelemetry(event: {
   );
 }
 
+export interface RagDocumentRecord {
+  id: string;
+  title: string;
+  content: string;
+  category: string;
+  projectId: string;
+  metadata: Record<string, unknown>;
+  similarity?: number;
+  matchedTerms?: string[];
+  createdAt: string;
+}
+
 export function getTelemetrySummary(): {
   totalSyntheses: number;
   avgDurationMs: number;
   totalBlueprints: number;
   vectorIndexSize: number;
+  customModulesCount: number;
+  ragDocumentsCount: number;
+  stripeWebhookEventsCount: number;
   recentEvents: TelemetryRecord[];
 } {
   const db = getDatabase();
@@ -900,6 +1041,18 @@ export function getTelemetrySummary(): {
   const vectorsRow = db
     .prepare('SELECT COUNT(*) as vector_index_size FROM orbital_module_vectors')
     .get() as { vector_index_size: number } | undefined;
+
+  const customModsRow = db
+    .prepare('SELECT COUNT(*) as custom_modules_count FROM custom_orbital_modules')
+    .get() as { custom_modules_count: number } | undefined;
+
+  const ragDocsRow = db
+    .prepare('SELECT COUNT(*) as rag_docs_count FROM rag_documents')
+    .get() as { rag_docs_count: number } | undefined;
+
+  const stripeEventsRow = db
+    .prepare('SELECT COUNT(*) as stripe_events_count FROM stripe_webhook_events')
+    .get() as { stripe_events_count: number } | undefined;
 
   const recentRows = db
     .prepare(
@@ -924,6 +1077,9 @@ export function getTelemetrySummary(): {
     avgDurationMs: Number((statsRow?.avg_duration_ms ?? 0).toFixed(2)),
     totalBlueprints: Number(blueprintsRow?.total_blueprints ?? 0),
     vectorIndexSize: Number(vectorsRow?.vector_index_size ?? 0),
+    customModulesCount: Number(customModsRow?.custom_modules_count ?? 0),
+    ragDocumentsCount: Number(ragDocsRow?.rag_docs_count ?? 0),
+    stripeWebhookEventsCount: Number(stripeEventsRow?.stripe_events_count ?? 0),
     recentEvents: recentRows.map((row) => ({
       id: row.id,
       eventType: row.event_type,
@@ -937,5 +1093,357 @@ export function getTelemetrySummary(): {
   };
 }
 
-// Eagerly initialize on module import so `.data/antigravity.sqlite` and all seed tables exist immediately
-getDatabase();
+export function listRagDocuments(
+  query?: string,
+  threshold = 0.12,
+  limit = 20
+): RagDocumentRecord[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT id, title, content, category, project_id, metadata_json, embedding_json, created_at
+       FROM rag_documents
+       ORDER BY created_at DESC`
+    )
+    .all() as Array<{
+    id: string;
+    title: string;
+    content: string;
+    category: string;
+    project_id: string;
+    metadata_json: string;
+    embedding_json: string;
+    created_at: string;
+  }>;
+
+  const cleanQuery = (query || '').trim();
+  if (!cleanQuery) {
+    return rows.slice(0, limit).map((r) => ({
+      id: r.id,
+      title: r.title,
+      content: r.content,
+      category: r.category,
+      projectId: r.project_id,
+      metadata: JSON.parse(r.metadata_json || '{}') as Record<string, unknown>,
+      createdAt: r.created_at,
+    }));
+  }
+
+  const queryVec = computeSemanticEmbedding(cleanQuery);
+  const queryTokens = Array.from(new Set(tokenizeText(cleanQuery)));
+  const scored: RagDocumentRecord[] = [];
+
+  for (const r of rows) {
+    const docVec = JSON.parse(r.embedding_json) as number[];
+    const docTokens = new Set(tokenizeText(`${r.title} ${r.category} ${r.content}`));
+    const matchedTerms: string[] = [];
+
+    for (const qTok of queryTokens) {
+      if (docTokens.has(qTok)) {
+        matchedTerms.push(qTok);
+      } else {
+        for (const dTok of docTokens) {
+          if (qTok.length >= 4 && dTok.length >= 4 && (dTok.startsWith(qTok) || qTok.startsWith(dTok))) {
+            matchedTerms.push(qTok);
+            break;
+          }
+        }
+      }
+    }
+
+    const rawCosine = cosineSimilarity(queryVec, docVec);
+    const lexicalBoost = Math.min(0.22, matchedTerms.length * 0.05);
+    const similarity = Number(Math.min(0.99, rawCosine + lexicalBoost).toFixed(4));
+
+    if (similarity >= threshold) {
+      scored.push({
+        id: r.id,
+        title: r.title,
+        content: r.content,
+        category: r.category,
+        projectId: r.project_id,
+        metadata: JSON.parse(r.metadata_json || '{}') as Record<string, unknown>,
+        similarity,
+        matchedTerms: Array.from(new Set(matchedTerms)).slice(0, 8),
+        createdAt: r.created_at,
+      });
+    }
+  }
+
+  scored.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
+  return scored.slice(0, limit);
+}
+
+export function saveRagDocument(input: {
+  title: string;
+  content: string;
+  category?: string;
+  projectId?: string;
+  metadata?: Record<string, unknown>;
+}): RagDocumentRecord {
+  const db = getDatabase();
+  const id = `rag-doc-${crypto.randomUUID().slice(0, 10)}`;
+  const createdAt = new Date().toISOString();
+  const title = input.title.trim();
+  const content = input.content.trim();
+  const category = (input.category || 'architecture').trim();
+  const projectId = (input.projectId || 'global').trim();
+  const metadata = input.metadata ?? {};
+  const embedding = computeSemanticEmbedding(`${title} ${category} ${content}`);
+
+  db.prepare(
+    `INSERT INTO rag_documents (
+      id, title, content, category, project_id, metadata_json, embedding_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    title,
+    content,
+    category,
+    projectId,
+    JSON.stringify(metadata),
+    JSON.stringify(embedding),
+    createdAt
+  );
+
+  return {
+    id,
+    title,
+    content,
+    category,
+    projectId,
+    metadata,
+    createdAt,
+  };
+}
+
+export function deleteRagDocument(id: string): boolean {
+  const db = getDatabase();
+  const result = db.prepare('DELETE FROM rag_documents WHERE id = ?').run(id);
+  return Number(result.changes) > 0;
+}
+
+export function listCustomModules(): OrbitalModule[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT id, name, subtitle, description, category, color, mass, base_angle,
+              dependencies_json, npm_dependencies_json, env_vars_json, keywords_json, files_json
+       FROM custom_orbital_modules
+       ORDER BY created_at ASC`
+    )
+    .all() as Array<{
+    id: string;
+    name: string;
+    subtitle: string;
+    description: string;
+    category: OrbitalModule['category'];
+    color: string;
+    mass: number;
+    base_angle: number;
+    dependencies_json: string;
+    npm_dependencies_json: string;
+    env_vars_json: string;
+    keywords_json: string;
+    files_json: string;
+  }>;
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    subtitle: r.subtitle,
+    description: r.description,
+    category: r.category,
+    color: r.color,
+    mass: Number(r.mass),
+    baseAngle: Number(r.base_angle),
+    dependencies: JSON.parse(r.dependencies_json || '[]') as string[],
+    npmDependencies: JSON.parse(r.npm_dependencies_json || '{}') as Record<string, string>,
+    envVars: JSON.parse(r.env_vars_json || '[]') as OrbitalModule['envVars'],
+    keywords: JSON.parse(r.keywords_json || '[]') as string[],
+    files: JSON.parse(r.files_json || '{}') as Record<string, string>,
+  }));
+}
+
+export function saveCustomModule(mod: OrbitalModule): OrbitalModule {
+  const db = getDatabase();
+  const createdAt = new Date().toISOString();
+  const corpus = buildModuleCorpus(mod);
+  const embedding = computeSemanticEmbedding(corpus);
+
+  db.prepare(
+    `INSERT INTO custom_orbital_modules (
+      id, name, subtitle, description, category, color, mass, base_angle,
+      dependencies_json, npm_dependencies_json, env_vars_json, keywords_json, files_json,
+      embedding_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      subtitle = excluded.subtitle,
+      description = excluded.description,
+      category = excluded.category,
+      color = excluded.color,
+      mass = excluded.mass,
+      base_angle = excluded.base_angle,
+      dependencies_json = excluded.dependencies_json,
+      npm_dependencies_json = excluded.npm_dependencies_json,
+      env_vars_json = excluded.env_vars_json,
+      keywords_json = excluded.keywords_json,
+      files_json = excluded.files_json,
+      embedding_json = excluded.embedding_json`
+  ).run(
+    mod.id,
+    mod.name,
+    mod.subtitle,
+    mod.description,
+    mod.category,
+    mod.color,
+    mod.mass,
+    mod.baseAngle,
+    JSON.stringify(mod.dependencies ?? []),
+    JSON.stringify(mod.npmDependencies ?? {}),
+    JSON.stringify(mod.envVars ?? []),
+    JSON.stringify(mod.keywords ?? []),
+    JSON.stringify(mod.files ?? {}),
+    JSON.stringify(embedding),
+    createdAt
+  );
+
+  return mod;
+}
+
+export function deleteCustomModule(id: string): boolean {
+  const db = getDatabase();
+  const result = db.prepare('DELETE FROM custom_orbital_modules WHERE id = ?').run(id);
+  return Number(result.changes) > 0;
+}
+
+export function getAllCatalogModules(): OrbitalModule[] {
+  const custom = listCustomModules();
+  const canonicalIds = new Set(ORBITAL_MODULES.map((m) => m.id));
+  return [...ORBITAL_MODULES, ...custom.filter((c) => !canonicalIds.has(c.id))];
+}
+
+export interface StripeWebhookEventRecord {
+  eventId: string;
+  eventType: string;
+  customerEmail: string;
+  subscriptionStatus: string;
+  payload: Record<string, unknown>;
+  verified: boolean;
+  createdAt: string;
+}
+
+export function recordStripeWebhookEvent(input: {
+  eventId: string;
+  eventType: string;
+  customerEmail?: string;
+  subscriptionStatus?: string;
+  payload?: Record<string, unknown>;
+  verified?: boolean;
+}): { record: StripeWebhookEventRecord; idempotentReplay: boolean } {
+  const db = getDatabase();
+  const existing = db
+    .prepare(
+      `SELECT event_id, event_type, customer_email, subscription_status, payload_json, verified, created_at
+       FROM stripe_webhook_events
+       WHERE event_id = ?`
+    )
+    .get(input.eventId) as
+    | {
+        event_id: string;
+        event_type: string;
+        customer_email: string;
+        subscription_status: string;
+        payload_json: string;
+        verified: number;
+        created_at: string;
+      }
+    | undefined;
+
+  if (existing) {
+    return {
+      record: {
+        eventId: existing.event_id,
+        eventType: existing.event_type,
+        customerEmail: existing.customer_email,
+        subscriptionStatus: existing.subscription_status,
+        payload: JSON.parse(existing.payload_json || '{}') as Record<string, unknown>,
+        verified: Boolean(existing.verified),
+        createdAt: existing.created_at,
+      },
+      idempotentReplay: true,
+    };
+  }
+
+  const createdAt = new Date().toISOString();
+  const customerEmail = (input.customerEmail || 'architect@antigravity.dev').trim();
+  const subscriptionStatus =
+    input.subscriptionStatus ||
+    (input.eventType === 'customer.subscription.deleted'
+      ? 'canceled'
+      : input.eventType === 'customer.subscription.updated'
+        ? 'past_due'
+        : 'active');
+  const payload = input.payload ?? {};
+  const verified = input.verified ?? true;
+
+  db.prepare(
+    `INSERT INTO stripe_webhook_events (
+      event_id, event_type, customer_email, subscription_status, payload_json, verified, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    input.eventId,
+    input.eventType,
+    customerEmail,
+    subscriptionStatus,
+    JSON.stringify(payload),
+    verified ? 1 : 0,
+    createdAt
+  );
+
+  return {
+    record: {
+      eventId: input.eventId,
+      eventType: input.eventType,
+      customerEmail,
+      subscriptionStatus,
+      payload,
+      verified,
+      createdAt,
+    },
+    idempotentReplay: false,
+  };
+}
+
+export function listStripeWebhookEvents(limit = 25): StripeWebhookEventRecord[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT event_id, event_type, customer_email, subscription_status, payload_json, verified, created_at
+       FROM stripe_webhook_events
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as Array<{
+    event_id: string;
+    event_type: string;
+    customer_email: string;
+    subscription_status: string;
+    payload_json: string;
+    verified: number;
+    created_at: string;
+  }>;
+
+  return rows.map((row) => ({
+    eventId: row.event_id,
+    eventType: row.event_type,
+    customerEmail: row.customer_email,
+    subscriptionStatus: row.subscription_status,
+    payload: JSON.parse(row.payload_json || '{}') as Record<string, unknown>,
+    verified: Boolean(row.verified),
+    createdAt: row.created_at,
+  }));
+}
+
+

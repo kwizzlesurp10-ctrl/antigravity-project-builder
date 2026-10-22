@@ -1,11 +1,12 @@
 {
   "name": "antigravity-project-builder",
-  "version": "2.5.0",
+  "version": "3.5.0",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
+    "pretest:e2e": "next build",
     "test:e2e": "playwright test"
   },
   "dependencies": {
