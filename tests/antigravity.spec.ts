@@ -111,20 +111,26 @@ test.describe('Antigravity Project Builder v3.5 Maximum Destiny Zero-Mock Suite'
     expect(sseBody).toContain('HNSW');
     expect(sseBody).toContain('data: [DONE]');
 
-    // 3. Verify sliding-window rate limiter enforces 429 Too Many Requests when threshold exceeded
-    const throttleIp = '10.24.99.99';
-    const firstAllowed = await request.post('/api/ai/stream', {
-      headers: { 'x-forwarded-for': throttleIp, 'x-rate-limit-rpm': '1' },
-      data: { prompt: 'First request within 1 RPM budget' },
-    });
-    expect(firstAllowed.status()).toBe(200);
+    // 3. Verify sliding-window rate limiter enforces 429 when server RATE_LIMIT_RPM is exceeded
+    // (Playwright webServer sets RATE_LIMIT_RPM=8; client bypass headers are intentionally gone.)
+    const throttleIp = `10.24.${Date.now() % 200}.${Date.now() % 200}`;
+    let lastStatus = 0;
+    for (let i = 0; i < 8; i++) {
+      const allowed = await request.post('/api/ai/stream', {
+        headers: { 'x-forwarded-for': throttleIp },
+        data: { prompt: `Budget request ${i}` },
+      });
+      expect(allowed.status()).toBe(200);
+      lastStatus = allowed.status();
+    }
+    expect(lastStatus).toBe(200);
 
-    const secondBlocked = await request.post('/api/ai/stream', {
-      headers: { 'x-forwarded-for': throttleIp, 'x-rate-limit-rpm': '1' },
-      data: { prompt: 'Second request exceeding 1 RPM budget' },
+    const blocked = await request.post('/api/ai/stream', {
+      headers: { 'x-forwarded-for': throttleIp },
+      data: { prompt: 'Request exceeding RPM budget' },
     });
-    expect(secondBlocked.status()).toBe(429);
-    expect(secondBlocked.headers()['retry-after']).toBeDefined();
+    expect(blocked.status()).toBe(429);
+    expect(blocked.headers()['retry-after']).toBeDefined();
   });
 
   test('API: /api/health, /api/rag/documents, /api/modules/forge, /api/audit/constellation, /api/blueprints/diff, /api/deploy/ignition, & /api/webhooks/stripe', async ({
@@ -256,7 +262,7 @@ test.describe('Antigravity Project Builder v3.5 Maximum Destiny Zero-Mock Suite'
       data: { object: { customer_email: 'architect@antigravity.dev' } },
     });
     const timestamp = Math.floor(Date.now() / 1000);
-    const secret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_orbital_test_secret';
+    const secret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_orbital_e2e_secret';
     const sigHex = crypto
       .createHmac('sha256', secret)
       .update(`${timestamp}.${webhookPayload}`, 'utf8')

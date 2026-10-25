@@ -1,6 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { synthesizeProject } from '@/lib/synthesizer';
+import { synthesizeProject, resolveDependencyGraph } from '@/lib/synthesizer';
 import { listCustomModules, recordTelemetry } from '@/lib/db/sqlite-engine';
 import { validateRuntimeEnv } from '@/lib/security/env-validator';
 import {
@@ -12,6 +14,8 @@ import {
 const AuditRequestSchema = z.object({
   projectName: z.string().min(2).max(64).optional().default('antigravity-orbital-app'),
   moduleIds: z.array(z.string().min(2).max(64)).min(1),
+  /** When "self", also audit live repository files on disk (ground truth). */
+  mode: z.enum(['synthesize', 'self']).optional().default('synthesize'),
 });
 
 export interface AuditPillarResult {
@@ -22,6 +26,91 @@ export interface AuditPillarResult {
   status: 'passed' | 'warning' | 'critical';
   findings: string[];
   remediationModuleId?: string;
+}
+
+const SELF_AUDIT_GLOBS = [
+  'middleware.ts',
+  'next.config.ts',
+  'lib/security/env-validator.ts',
+  'lib/security/rate-limiter.ts',
+  'lib/db/sqlite-engine.ts',
+  'app/api/webhooks/stripe/route.ts',
+  'app/api/ai/stream/route.ts',
+  'supabase/migrations/20250101000000_antigravity_schema.sql',
+] as const;
+
+function readLiveRepositoryFiles(): Record<string, string> {
+  const root = process.cwd();
+  const files: Record<string, string> = {};
+  for (const rel of SELF_AUDIT_GLOBS) {
+    const abs = path.join(root, rel);
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      files[rel] = fs.readFileSync(abs, 'utf8');
+    }
+  }
+
+  // Include SQL migrations and key API routes when present
+  const walkDirs = ['supabase/migrations', 'app/api', 'lib/security'];
+  for (const dir of walkDirs) {
+    const absDir = path.join(root, dir);
+    if (!fs.existsSync(absDir)) continue;
+    const stack = [absDir];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const full = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(full);
+          continue;
+        }
+        if (!/\.(ts|tsx|sql|js|mjs)$/.test(entry.name)) continue;
+        const rel = path.relative(root, full).split(path.sep).join('/');
+        if (!(rel in files)) {
+          files[rel] = fs.readFileSync(full, 'utf8');
+        }
+      }
+    }
+  }
+
+  return files;
+}
+
+function scanSecrets(entries: Array<[string, string]>): {
+  clean: boolean;
+  findings: string[];
+} {
+  const findings: string[] = [];
+  for (const [filePath, content] of entries) {
+    if (content.includes('sk_live_') || content.includes('rk_live_')) {
+      findings.push(`${filePath}: live Stripe secret material detected`);
+    }
+    if (/\bwhsec_[A-Za-z0-9]+/.test(content) && !filePath.includes('modules-catalog')) {
+      // Flag hardcoded webhook secrets; allow documented placeholders like whsec_your_...
+      if (!/whsec_your_/i.test(content) && content.includes('whsec_')) {
+        const hardcoded = content.match(/whsec_[A-Za-z0-9]+/g) ?? [];
+        for (const hit of hardcoded) {
+          if (!hit.startsWith('whsec_your_')) {
+            findings.push(`${filePath}: hardcoded Stripe webhook secret prefix (${hit.slice(0, 12)}…)`);
+            break;
+          }
+        }
+      }
+    }
+    if (
+      /(password|passwd)\s*[:=]\s*['"](?!your_|changeme|placeholder|example|orbital_zero_trust)[^'"]{8,}['"]/i.test(
+        content
+      ) ||
+      /PASSWORD\s*=\s*['"](?!your_|changeme|placeholder|example|orbital_zero_trust)[^'"]{8,}['"]/.test(
+        content
+      )
+    ) {
+      findings.push(`${filePath}: hardcoded password assignment detected`);
+    }
+    if (/\beval\(/.test(content)) {
+      findings.push(`${filePath}: eval() usage detected`);
+    }
+  }
+  return { clean: findings.length === 0, findings };
 }
 
 export async function POST(request: Request) {
@@ -55,7 +144,17 @@ export async function POST(request: Request) {
       customModules,
     });
 
-    const files = synthesized.files;
+    const graph = resolveDependencyGraph(parsed.data.moduleIds, customModules);
+    const cycleCount = graph.cycles.length;
+
+    const liveFiles =
+      parsed.data.mode === 'self' ? readLiveRepositoryFiles() : ({} as Record<string, string>);
+
+    const files: Record<string, string> =
+      parsed.data.mode === 'self'
+        ? { ...synthesized.files, ...liveFiles }
+        : synthesized.files;
+
     const resolvedSet = new Set(synthesized.resolvedIds);
     const sqlFiles = Object.entries(files).filter(([p]) => p.endsWith('.sql'));
     const routeFiles = Object.entries(files).filter(([p]) => p.includes('/api/') || p.endsWith('route.ts'));
@@ -81,7 +180,7 @@ export async function POST(request: Request) {
       rlsScore += 6;
       rlsFindings.push('No SQL migrations active; dock `supabase-db` for PostgreSQL 17 RLS persistence.');
     }
-    if (resolvedSet.has('supabase-auth')) {
+    if (resolvedSet.has('supabase-auth') || files['middleware.ts']?.includes('createServerClient')) {
       rlsScore += 7;
       rlsFindings.push('Supabase SSR cookie session middleware and PKCE callback verified.');
     } else {
@@ -91,7 +190,7 @@ export async function POST(request: Request) {
     // Pillar 2: Zero-Trust Zod Validation & Env Guard (Max 25)
     let zodScore = 0;
     const zodFindings: string[] = [];
-    if (resolvedSet.has('zod-security')) {
+    if (resolvedSet.has('zod-security') || files['lib/security/env-validator.ts']) {
       zodScore += 18;
       zodFindings.push('Runtime environment schema (`validateRuntimeEnv`) and Zod guards active.');
     } else {
@@ -124,14 +223,27 @@ export async function POST(request: Request) {
       shieldFindings.push('No sliding-window rate limiter present; dock `zod-security` to prevent 429 floods.');
     }
 
-    // Pillar 4: Topological Dependency DAG & Type Safety (Max 15)
-    const dagScore = 15;
-    const dagFindings = [
-      `Topological DAG resolved cleanly (${synthesized.resolvedIds.length} modules, ${synthesized.dependencyEdges.length} edges, 0 cycles).`,
-      synthesized.autoAddedIds.length > 0
-        ? `Auto-healed ${synthesized.autoAddedIds.length} transitive dependency module(s): ${synthesized.autoAddedIds.join(', ')}.`
-        : 'All transitive module dependencies explicitly satisfied.',
-    ];
+    // Pillar 4: Topological Dependency DAG & Type Safety (Max 15) — score from cycle detection
+    let dagScore = 0;
+    const dagFindings: string[] = [];
+    if (cycleCount === 0) {
+      dagScore = 15;
+      dagFindings.push(
+        `Topological DAG resolved cleanly (${graph.resolvedIds.length} modules, ${graph.dependencyEdges.length} edges, 0 cycles).`
+      );
+    } else {
+      dagScore = Math.max(0, 15 - cycleCount * 5);
+      dagFindings.push(
+        `Detected ${cycleCount} dependency cycle(s): ${graph.cycles
+          .map((c) => c.join(' -> '))
+          .join('; ')}.`
+      );
+    }
+    dagFindings.push(
+      graph.autoAddedIds.length > 0
+        ? `Auto-healed ${graph.autoAddedIds.length} transitive dependency module(s): ${graph.autoAddedIds.join(', ')}.`
+        : 'All transitive module dependencies explicitly satisfied.'
+    );
 
     // Pillar 5: DevOps Container & E2E Verification Matrix (Max 15)
     let opsScore = 0;
@@ -149,6 +261,12 @@ export async function POST(request: Request) {
       opsFindings.push('Dock `playwright-qa` for automated Chromium E2E regression coverage.');
     }
 
+    if (parsed.data.mode === 'self') {
+      dagFindings.push(
+        `Self-audit mode merged ${Object.keys(liveFiles).length} live repository file(s) into ground truth.`
+      );
+    }
+
     const pillars: AuditPillarResult[] = [
       {
         id: 'rls-auth',
@@ -157,7 +275,11 @@ export async function POST(request: Request) {
         maxScore: 25,
         status: rlsScore >= 20 ? 'passed' : rlsScore >= 12 ? 'warning' : 'critical',
         findings: rlsFindings,
-        remediationModuleId: !resolvedSet.has('supabase-auth') ? 'supabase-auth' : !resolvedSet.has('supabase-db') ? 'supabase-db' : undefined,
+        remediationModuleId: !resolvedSet.has('supabase-auth')
+          ? 'supabase-auth'
+          : !resolvedSet.has('supabase-db')
+            ? 'supabase-db'
+            : undefined,
       },
       {
         id: 'zod-validation',
@@ -182,7 +304,7 @@ export async function POST(request: Request) {
         title: 'Topological DAG & AST Integrity',
         score: dagScore,
         maxScore: 15,
-        status: 'passed',
+        status: cycleCount === 0 ? 'passed' : dagScore >= 8 ? 'warning' : 'critical',
         findings: dagFindings,
       },
       {
@@ -210,9 +332,15 @@ export async function POST(request: Request) {
     );
 
     const grade =
-      totalScore >= 90 ? 'A+ (Zero-Trust Singularity)' : totalScore >= 75 ? 'A (Production Orbit)' : totalScore >= 60 ? 'B (Standard Orbit)' : 'C (Unshielded Orbit)';
+      totalScore >= 90
+        ? 'A+ (Zero-Trust Singularity)'
+        : totalScore >= 75
+          ? 'A (Production Orbit)'
+          : totalScore >= 60
+            ? 'B (Standard Orbit)'
+            : 'C (Unshielded Orbit)';
 
-    const allEntries = Object.entries(synthesized.files);
+    const allEntries = Object.entries(files);
     const totalLinesOfCode = allEntries.reduce(
       (sum, [, content]) => sum + content.split('\n').length,
       0
@@ -234,10 +362,8 @@ export async function POST(request: Request) {
     const e2eTestsCount = allEntries
       .filter(([p]) => p.endsWith('.spec.ts'))
       .reduce((sum, [, content]) => sum + (content.match(/\btest\(/g)?.length ?? 0), 0);
-    const secretScanClean = !allEntries.some(
-      ([, content]) =>
-        content.includes('sk_live_') || content.includes('rk_live_') || /\beval\(/.test(content)
-    );
+
+    const secretScan = scanSecrets(allEntries);
 
     const astMetrics = {
       totalLinesOfCode,
@@ -246,7 +372,12 @@ export async function POST(request: Request) {
       apiRoutesCount,
       zodSchemasCount,
       e2eTestsCount,
-      secretScanClean,
+      secretScanClean: secretScan.clean,
+      secretFindings: secretScan.findings,
+      cycleCount,
+      cycles: graph.cycles,
+      auditMode: parsed.data.mode,
+      liveFilesAudited: parsed.data.mode === 'self' ? Object.keys(liveFiles).length : 0,
     };
 
     recordTelemetry({

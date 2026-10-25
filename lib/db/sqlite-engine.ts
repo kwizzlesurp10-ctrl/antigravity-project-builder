@@ -412,9 +412,26 @@ function computeBundleStats(moduleIds: string[]): {
   };
 }
 
+/**
+ * Local SQLite is development-only. On Vercel / Lambda the filesystem under
+ * `/tmp` is ephemeral and must not be used as a durable store.
+ *
+ * Production durable path: configure Supabase/Postgres using the schema at
+ * `supabase/migrations/20250101000000_antigravity_schema.sql` with:
+ *   - NEXT_PUBLIC_SUPABASE_URL
+ *   - NEXT_PUBLIC_SUPABASE_ANON_KEY
+ *   - SUPABASE_SERVICE_ROLE_KEY
+ */
 export function getDataDir(): string {
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    return path.join('/tmp', '.data');
+    const message = [
+      'SQLite /tmp persistence is disabled on Vercel/Lambda.',
+      'Configure durable Supabase/Postgres instead of relying on ephemeral /tmp storage.',
+      'Required env vars: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.',
+      'Apply schema: supabase/migrations/20250101000000_antigravity_schema.sql',
+    ].join(' ');
+    console.error(`[antigravity:persistence] ${message}`);
+    throw new Error(message);
   }
   return path.join(process.cwd(), '.data');
 }

@@ -6,7 +6,6 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "pretest:e2e": "next build",
     "test:e2e": "playwright test"
   },
   "dependencies": {

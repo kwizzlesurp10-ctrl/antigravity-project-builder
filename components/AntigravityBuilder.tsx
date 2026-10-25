@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import anime from 'animejs';
 import { ORBITAL_MODULES, OrbitalModule } from '@/lib/modules-catalog';
 import { useOrbitalStore } from '@/store/useOrbitalStore';
+import { withAdminAuthHeaders } from '@/lib/security/admin-headers';
 import {
   Sparkles,
   Rocket,
@@ -138,9 +139,9 @@ export default function AntigravityBuilder() {
   const refreshBackendTelemetry = useCallback(async () => {
     try {
       const [bpRes, telRes, forgeRes] = await Promise.all([
-        fetch('/api/blueprints'),
-        fetch('/api/telemetry'),
-        fetch('/api/modules/forge'),
+        fetch('/api/blueprints', { headers: withAdminAuthHeaders() }),
+        fetch('/api/telemetry', { headers: withAdminAuthHeaders() }),
+        fetch('/api/modules/forge', { headers: withAdminAuthHeaders() }),
       ]);
       if (bpRes.ok) {
         const bpData = await bpRes.json();
@@ -485,7 +486,7 @@ export default function AntigravityBuilder() {
     try {
       const res = await fetch('/api/blueprints', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           name: blueprintTitle.trim(),
           projectSlug: projectName,
@@ -505,7 +506,10 @@ export default function AntigravityBuilder() {
   };
 
   const handleDeleteBlueprint = async (id: string) => {
-    await fetch(`/api/blueprints?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await fetch(`/api/blueprints?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: withAdminAuthHeaders(),
+    });
     await refreshBackendTelemetry();
   };
 

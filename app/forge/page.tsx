@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useOrbitalStore } from '@/store/useOrbitalStore';
 import type { OrbitalModule, ModuleCategory } from '@/lib/modules-catalog';
+import { withAdminAuthHeaders } from '@/lib/security/admin-headers';
 import { Hammer, Sparkles, Plus, Trash2, Orbit, Code2 } from 'lucide-react';
 
 export default function ForgePage() {
@@ -23,7 +24,7 @@ export default function ForgePage() {
   const [forgeStatus, setForgeStatus] = useState<string>('');
 
   const loadCustomModules = useCallback(async () => {
-    const res = await fetch('/api/modules/forge');
+    const res = await fetch('/api/modules/forge', { headers: withAdminAuthHeaders() });
     if (res.ok) {
       const data = await res.json();
       setCustomModules(data.customModules ?? []);
@@ -42,7 +43,7 @@ export default function ForgePage() {
     try {
       const res = await fetch('/api/modules/forge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'generate-skeleton',
           name,
@@ -68,7 +69,7 @@ export default function ForgePage() {
     try {
       const res = await fetch('/api/modules/forge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'save',
           ...draftModule,
@@ -87,7 +88,10 @@ export default function ForgePage() {
   };
 
   const handleDeleteCustom = async (id: string) => {
-    await fetch(`/api/modules/forge?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await fetch(`/api/modules/forge?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: withAdminAuthHeaders(),
+    });
     setDockedIds(dockedIds.filter((d) => d !== id));
     await loadCustomModules();
   };

@@ -41,3 +41,13 @@ npm run dev
 npm run build
 npm run test:e2e
 ```
+
+## GitHub Actions CI/CD & Vercel Deployment
+
+Automated workflow in [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml):
+1. **Typecheck & E2E Matrix**: Runs on all pushes and pull requests to `main` (Node 22, Next.js 15 production build, and all 7 Playwright Chromium E2E tests).
+2. **Automated Vercel Deployment**: Automatically triggers on successful `push` to `main`.
+   - Set `VERCEL_TOKEN` in GitHub Repository Secrets (**Settings > Secrets and variables > Actions > New repository secret**) to enable direct headless production deployments.
+   - Vercel Project ID: `prj_SidGLdC1puWpbdhQGzYm7SAZTc2B`
+   - Vercel Org ID: `team_mvV0NlN9phNSfXe4PmlcG3eK`
+

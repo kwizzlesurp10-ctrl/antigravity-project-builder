@@ -12,6 +12,8 @@ export interface DependencyGraphResult {
   autoAddedIds: string[];
   topologicalOrder: string[];
   dependencyEdges: DependencyEdge[];
+  /** Detected dependency cycles as ordered id paths (last id repeats the cycle start). */
+  cycles: string[][];
 }
 
 export interface GravityConfig {
@@ -166,13 +168,13 @@ const FALLBACK_ENV_VARS: Record<
     },
     {
       key: 'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-      defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.anon-placeholder',
+      defaultValue: 'replace-with-supabase-anon-key',
       description: 'Supabase anonymous public API key governed by Row-Level Security (RLS)',
       required: true,
     },
     {
       key: 'SUPABASE_SERVICE_ROLE_KEY',
-      defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.service-role-placeholder',
+      defaultValue: 'replace-with-supabase-service-role-key',
       description: 'Server-only Supabase administrative key for migrations and trusted jobs',
       required: false,
     },
@@ -349,16 +351,32 @@ export function resolveDependencyGraph(
 
   const visited = new Set<string>();
   const visiting = new Set<string>();
+  const stack: string[] = [];
   const topologicalOrder: string[] = [];
   const dependencyEdges: DependencyEdge[] = [];
   const edgeKeys = new Set<string>();
+  const cycles: string[][] = [];
+  const seenCycleKeys = new Set<string>();
 
   const visit = (id: string) => {
-    if (visited.has(id) || visiting.has(id)) return;
+    if (visited.has(id)) return;
+    if (visiting.has(id)) {
+      const start = stack.indexOf(id);
+      if (start >= 0) {
+        const cycle = [...stack.slice(start), id];
+        const key = cycle.join('>');
+        if (!seenCycleKeys.has(key)) {
+          seenCycleKeys.add(key);
+          cycles.push(cycle);
+        }
+      }
+      return;
+    }
     const mod = catalogMap.get(id);
     if (!mod) return;
 
     visiting.add(id);
+    stack.push(id);
     const deps = [...(mod.dependencies ?? [])].sort(
       (a, b) => (catalogIndex.get(a) ?? 999) - (catalogIndex.get(b) ?? 999)
     );
@@ -374,6 +392,7 @@ export function resolveDependencyGraph(
       }
     }
 
+    stack.pop();
     visiting.delete(id);
     visited.add(id);
     topologicalOrder.push(id);
@@ -391,6 +410,7 @@ export function resolveDependencyGraph(
     autoAddedIds,
     topologicalOrder,
     dependencyEdges,
+    cycles,
   };
 }
 

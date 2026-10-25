@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useOrbitalStore } from '@/store/useOrbitalStore';
+import { withAdminAuthHeaders } from '@/lib/security/admin-headers';
 import { ShieldCheck, GitCompare, Rocket, CheckCircle2, AlertTriangle, Zap } from 'lucide-react';
 
 interface AuditPillar {
@@ -93,7 +94,7 @@ export default function ShieldPage() {
 
   const loadMaterializedProjects = useCallback(async () => {
     try {
-      const res = await fetch('/api/deploy/ignition');
+      const res = await fetch('/api/deploy/ignition', { headers: withAdminAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setMaterializedProjects(data.materializedProjects ?? []);
@@ -105,7 +106,7 @@ export default function ShieldPage() {
 
   const loadStripeLedger = useCallback(async () => {
     try {
-      const res = await fetch('/api/webhooks/stripe');
+      const res = await fetch('/api/webhooks/stripe', { headers: withAdminAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setStripeEvents(data.events ?? []);
@@ -120,7 +121,7 @@ export default function ShieldPage() {
     try {
       const res = await fetch('/api/webhooks/stripe', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           eventType,
           customerEmail: `architect@${projectName || 'antigravity'}.dev`,
@@ -132,6 +133,10 @@ export default function ShieldPage() {
           `✓ Verified HMAC-SHA256 (${data.id}) • ${data.type} • Replay: ${data.idempotentReplay ? 'YES' : 'NO'}`
         );
         await loadStripeLedger();
+      } else if (res.status === 404) {
+        setWebhookStatus('Stripe simulator disabled in production.');
+      } else if (res.status === 401) {
+        setWebhookStatus('Unauthorized — set NEXT_PUBLIC_API_ADMIN_SECRET for simulator access.');
       }
     } finally {
       setDispatchingWebhook(false);
@@ -191,7 +196,7 @@ export default function ShieldPage() {
 
   useEffect(() => {
     const init = async () => {
-      const res = await fetch('/api/blueprints');
+      const res = await fetch('/api/blueprints', { headers: withAdminAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setBlueprints(data.blueprints ?? []);
@@ -214,7 +219,7 @@ export default function ShieldPage() {
     try {
       const res = await fetch('/api/deploy/ignition', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           projectName,
           moduleIds: dockedIds,

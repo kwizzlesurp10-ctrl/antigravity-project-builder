@@ -6,7 +6,40 @@ import {
   listStripeWebhookEvents,
 } from '@/lib/db/sqlite-engine';
 
-function verifyStripeSignature(rawBody: string, signatureHeader: string, secret: string): boolean {
+const STRIPE_TIMESTAMP_TOLERANCE_SEC = 300;
+
+function resolveWebhookSecret(): { secret: string } | { error: NextResponse } {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      return {
+        error: NextResponse.json(
+          {
+            error:
+              'STRIPE_WEBHOOK_SECRET is required in production. Configure the Stripe webhook signing secret before accepting events.',
+          },
+          { status: 500 }
+        ),
+      };
+    }
+    return {
+      error: NextResponse.json(
+        {
+          error:
+            'STRIPE_WEBHOOK_SECRET is not configured. Set it in the environment for local webhook verification.',
+        },
+        { status: 500 }
+      ),
+    };
+  }
+  return { secret };
+}
+
+function verifyStripeSignature(
+  rawBody: string,
+  signatureHeader: string,
+  secret: string
+): { ok: true } | { ok: false; reason: string } {
   const parts = Object.fromEntries(
     signatureHeader.split(',').map((item) => {
       const [k, v] = item.trim().split('=');
@@ -15,15 +48,27 @@ function verifyStripeSignature(rawBody: string, signatureHeader: string, secret:
   );
   const timestamp = parts.t;
   const v1 = parts.v1;
-  if (!timestamp || !v1) return false;
+  if (!timestamp || !v1) {
+    return { ok: false, reason: 'Malformed stripe-signature header' };
+  }
+
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts)) {
+    return { ok: false, reason: 'Invalid stripe-signature timestamp' };
+  }
+
+  if (Math.abs(Date.now() / 1000 - ts) > STRIPE_TIMESTAMP_TOLERANCE_SEC) {
+    return { ok: false, reason: 'Stripe webhook timestamp outside 300s tolerance' };
+  }
 
   const signedPayload = `${timestamp}.${rawBody}`;
   const expected = crypto.createHmac('sha256', secret).update(signedPayload, 'utf8').digest('hex');
 
   try {
-    return crypto.timingSafeEqual(Buffer.from(v1, 'hex'), Buffer.from(expected, 'hex'));
+    const valid = crypto.timingSafeEqual(Buffer.from(v1, 'hex'), Buffer.from(expected, 'hex'));
+    return valid ? { ok: true } : { ok: false, reason: 'Signature mismatch' };
   } catch {
-    return false;
+    return { ok: false, reason: 'Signature comparison failed' };
   }
 }
 
@@ -32,9 +77,27 @@ export async function GET() {
   return NextResponse.json({ status: 'online', events }, { status: 200 });
 }
 
+/**
+ * Dev-only signed-event simulator.
+ * Gated behind NODE_ENV !== 'production' and x-admin-secret === API_ADMIN_SECRET.
+ * Never returns signature material to the client.
+ */
 export async function PUT(request: Request) {
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+
+  const adminSecret = process.env.API_ADMIN_SECRET?.trim();
+  const provided = request.headers.get('x-admin-secret')?.trim();
+  if (!adminSecret || !provided || provided !== adminSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const resolved = resolveWebhookSecret();
+  if ('error' in resolved) return resolved.error;
+  const webhookSecret = resolved.secret;
+
   const start = performance.now();
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_orbital_test_secret';
 
   try {
     const body = (await request.json().catch(() => ({}))) as {
@@ -70,14 +133,14 @@ export async function PUT(request: Request) {
       .digest('hex');
     const signatureHeader = `t=${timestamp},v1=${v1}`;
 
-    const isVerified = verifyStripeSignature(rawBody, signatureHeader, webhookSecret);
+    const verification = verifyStripeSignature(rawBody, signatureHeader, webhookSecret);
     const stored = recordStripeWebhookEvent({
       eventId,
       eventType,
       customerEmail,
       subscriptionStatus: status,
       payload: payloadObj,
-      verified: isVerified,
+      verified: verification.ok,
     });
 
     recordTelemetry({
@@ -92,13 +155,12 @@ export async function PUT(request: Request) {
     return NextResponse.json(
       {
         received: true,
-        verified: isVerified,
+        verified: verification.ok,
         simulatedDispatch: true,
         id: eventId,
         type: eventType,
         idempotentReplay: stored.idempotentReplay,
         subscriptionStatus: stored.record.subscriptionStatus,
-        signatureHeader,
         event: stored.record,
       },
       { status: 200 }
@@ -113,9 +175,11 @@ export async function PUT(request: Request) {
 
 export async function POST(request: Request) {
   const start = performance.now();
-  const signature = request.headers.get('stripe-signature');
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_orbital_test_secret';
+  const resolved = resolveWebhookSecret();
+  if ('error' in resolved) return resolved.error;
+  const webhookSecret = resolved.secret;
 
+  const signature = request.headers.get('stripe-signature');
   if (!signature) {
     return NextResponse.json(
       { error: 'Missing stripe-signature header' },
@@ -124,11 +188,11 @@ export async function POST(request: Request) {
   }
 
   const rawBody = await request.text();
-  const isVerified = verifyStripeSignature(rawBody, signature, webhookSecret);
+  const verification = verifyStripeSignature(rawBody, signature, webhookSecret);
 
-  if (!isVerified) {
+  if (!verification.ok) {
     return NextResponse.json(
-      { error: 'Webhook cryptographic signature verification failed' },
+      { error: `Webhook cryptographic signature verification failed: ${verification.reason}` },
       { status: 400 }
     );
   }
