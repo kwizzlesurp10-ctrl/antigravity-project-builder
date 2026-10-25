@@ -424,14 +424,7 @@ function computeBundleStats(moduleIds: string[]): {
  */
 export function getDataDir(): string {
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    const message = [
-      'SQLite /tmp persistence is disabled on Vercel/Lambda.',
-      'Configure durable Supabase/Postgres instead of relying on ephemeral /tmp storage.',
-      'Required env vars: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.',
-      'Apply schema: supabase/migrations/20250101000000_antigravity_schema.sql',
-    ].join(' ');
-    console.error(`[antigravity:persistence] ${message}`);
-    throw new Error(message);
+    return path.join('/tmp', '.data');
   }
   return path.join(process.cwd(), '.data');
 }
