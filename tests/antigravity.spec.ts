@@ -352,4 +352,24 @@ test.describe('Antigravity Project Builder v3.5 Maximum Destiny Zero-Mock Suite'
       'create extension if not exists vector'
     );
   });
+
+  test('UI: switches into 3D GPU Gravitational Physics Engine and interacts with orbital canvas', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    const toggle = page.getByTestId('canvas-view-toggle');
+    await expect(toggle).toBeVisible();
+
+    const btn3d = page.getByTestId('canvas-view-3d-btn');
+    await btn3d.click();
+
+    const canvasContainer = page.getByTestId('physics3d-canvas-container');
+    await expect(canvasContainer).toBeVisible();
+    await expect(canvasContainer.locator('canvas')).toBeVisible();
+
+    // Verify returning to 2D HUD
+    const btn2d = page.getByTestId('canvas-view-2d-btn');
+    await btn2d.click();
+    await expect(page.getByTestId('singularity-core')).toBeVisible();
+  });
 });

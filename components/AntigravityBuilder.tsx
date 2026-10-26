@@ -5,6 +5,7 @@ import anime from 'animejs';
 import { ORBITAL_MODULES, OrbitalModule } from '@/lib/modules-catalog';
 import { useOrbitalStore } from '@/store/useOrbitalStore';
 import { withAdminAuthHeaders } from '@/lib/security/admin-headers';
+import { OrbitalPhysicsCanvas } from '@/components/OrbitalPhysicsCanvas';
 import {
   Sparkles,
   Rocket,
@@ -78,6 +79,7 @@ export default function AntigravityBuilder() {
   const [savingBlueprint, setSavingBlueprint] = useState(false);
   const [statusAnnouncement, setStatusAnnouncement] = useState('Antigravity Orbital Core Online');
   const [customModules, setCustomModules] = useState<OrbitalModule[]>([]);
+  const [canvasView, setCanvasView] = useState<'schematic' | 'physics3d'>('schematic');
 
   const allModules = useMemo(() => {
     const canonicalIds = new Set(ORBITAL_MODULES.map((m) => m.id));
@@ -726,15 +728,54 @@ export default function AntigravityBuilder() {
                 {reducedMotion ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
                 {reducedMotion ? 'Static Grid' : '60fps Orbit'}
               </button>
+
+              {/* 2D Schematic / 3D Gravity Canvas Switcher */}
+              <div
+                data-testid="canvas-view-toggle"
+                className="flex items-center rounded-lg border border-slate-700/80 bg-slate-900/90 p-0.5 text-[10px] font-mono"
+              >
+                <button
+                  type="button"
+                  data-testid="canvas-view-2d-btn"
+                  onClick={() => setCanvasView('schematic')}
+                  className={`px-2 py-0.5 rounded cursor-pointer transition-all ${
+                    canvasView === 'schematic'
+                      ? 'bg-cyan-500/30 text-cyan-200 border border-cyan-400/50 font-bold'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  2D HUD
+                </button>
+                <button
+                  type="button"
+                  data-testid="canvas-view-3d-btn"
+                  onClick={() => setCanvasView('physics3d')}
+                  className={`px-2 py-0.5 rounded cursor-pointer transition-all ${
+                    canvasView === 'physics3d'
+                      ? 'bg-purple-500/30 text-purple-200 border border-purple-400/50 font-bold'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  3D Physics
+                </button>
+              </div>
             </div>
           </div>
         </header>
 
-        {/* Orbital Physics Stage (680x680 coordinate space) */}
-        <div
-          ref={stageRef}
-          className="relative w-[680px] h-[680px] flex items-center justify-center my-auto scale-[0.82] sm:scale-95 xl:scale-100"
-        >
+        {/* Orbital Stage: 3D GPU Gravitational Physics or 2D Schematic */}
+        {canvasView === 'physics3d' ? (
+          <div
+            data-testid="physics3d-canvas-container"
+            className="w-full max-w-[680px] my-auto scale-[0.85] sm:scale-95 xl:scale-100"
+          >
+            <OrbitalPhysicsCanvas customModules={customModules} />
+          </div>
+        ) : (
+          <div
+            ref={stageRef}
+            className="relative w-[680px] h-[680px] flex items-center justify-center my-auto scale-[0.82] sm:scale-95 xl:scale-100"
+          >
           {/* SVG Orbital Rings, Dependency Arcs & Gravitational Bezier Tethers */}
           <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 680 680">
             <defs>
@@ -894,6 +935,7 @@ export default function AntigravityBuilder() {
             );
           })}
         </div>
+        )}
 
         {/* Bottom Telemetry & Synthesis Trigger */}
         <footer className="w-full max-w-5xl flex flex-wrap items-center justify-between gap-3 z-20 bg-slate-900/70 backdrop-blur-xl border border-slate-800/80 rounded-2xl px-5 py-3">
